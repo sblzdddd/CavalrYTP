@@ -26,6 +26,14 @@ const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
 const { name, displayName, version } = pkg;
 const outfile = join(OUTDIR, `${displayName}.js`);
 
+// MIT requires this notice in every copy, so it leads the script that ships. A `*/` inside the
+// text would close the comment early, so that sequence is split before it is wrapped.
+export const licenseHeader = `/*\n${(await readFile(join(ROOT, "..", "LICENSE"), "utf8"))
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .replaceAll("*/", "* /")}\n\nhttps://github.com/sblzdddd/CavalrYTP\n*/\n`;
+
 // Cavalry lists scripts from a per-user folder, and a directory link into dist/ is how a
 // rebuild shows up in that menu without copying anything.
 const appData = platform() === "darwin" ? "/Library/Application Support" : "/AppData/Roaming";
@@ -49,6 +57,7 @@ export function esbuildOptions(devmode = false) {
             PRODUCT_DISPLAY_NAME: JSON.stringify(displayName),
             PRODUCT_VERSION: JSON.stringify(version),
         },
+        banner: { js: licenseHeader },
     };
 }
 
@@ -85,7 +94,7 @@ function reportErrors() {
                 );
                 const summary = `${lines.length} build errors in ${displayName}. Check the terminal.`;
                 lines.push(`console.error(${JSON.stringify(summary)})`);
-                await writeFile(target, lines.join("\n"), "utf8");
+                await writeFile(target, `${licenseHeader}${lines.join("\n")}`, "utf8");
                 console.log(`Errors written to ${target}`);
             });
         },
