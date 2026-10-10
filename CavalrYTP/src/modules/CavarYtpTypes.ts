@@ -4,7 +4,7 @@
 
 export interface MidiEvent {
     absMicroseconds: number;
-    /** `noteon`, `noteoff`, `controlchange`, or anything else the converter passes through. */
+    /** `noteon`, `noteoff` or `controlchange`; every other message is dropped while parsing. */
     type: string;
     /** key, velocity, channel, controller, value, … */
     data?: Record<string, unknown>;
@@ -21,7 +21,6 @@ export interface MidiTrack {
 }
 
 export interface MidiData {
-    timeFormat?: string;
     trackNames?: string[];
     tracks: MidiTrack[];
 }

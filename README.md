@@ -10,16 +10,14 @@ scripts folder (`Scripts > Show Scripts Folder`). You end up with:
 ```
 Scripts/
 └── CavalrYTP/
-    ├── CavalrYTP.jsc
-    └── CavalrYTP_assets/
-        └── CMC.exe
+    └── CavalrYTP.jsc
 ```
 
 Restart Cavalry, then run it from `Scripts > CavalrYTP`.
 
 > [!IMPORTANT]
-> `CavalrYTP.jsc` is not self-contained: `CMC.exe` has to sit next to it in
-> `CavalrYTP_assets`. Installing the release zip keeps the two together.
+> `CavalrYTP.jsc` is self-contained: the MIDI parser is bundled into it, so nothing has
+> to sit next to the script and the same build runs everywhere.
 
 ## Usage
 
@@ -38,7 +36,7 @@ The source lives in `dev/`, the same layout as the
 ```
 CavalrYTP/
 ├── CavalrYTP.jsc            built script (published release asset)
-├── CavalryMiDiConverter/    Go source of CMC
+├── CavalryMiDiConverter/    retired Go source of CMC, kept for reference only
 └── dev/
     ├── package.json         bundler config: displayName drives the script folder name
     ├── pnpm-workspace.yaml  pnpm settings: approves esbuild's build script
@@ -47,7 +45,6 @@ CavalrYTP/
     │   ├── CavalrYTP.ts     entry point, builds the UI
     │   └── modules/         the core, one module per concern (all .ts)
     ├── static/
-    │   ├── _assets/         files copied to CavalrYTP_assets next to the script
     │   └── release/         files added to the root of the release zip
     └── test/                node:test suites
 ```
@@ -74,7 +71,8 @@ Dependencies go through [pnpm](https://pnpm.io) with the versions locked in
 `corepack enable` picks the same one up. pnpm settings live in
 `dev/pnpm-workspace.yaml`, which approves esbuild's build script (pnpm 11 refuses to
 run dependency build scripts that nobody has reviewed). Node 24.3+ is required, as
-`@scenery/bundler` declares.
+`@scenery/bundler` declares. `midi-file` is the one runtime dependency; esbuild inlines it
+into the bundle, so it never ships as a separate file.
 
 The Cavalry API types come from
 [@scenery/cavalry-types](https://github.com/scenery-io/cavalry-types), which every file
@@ -82,13 +80,15 @@ pulls in with `/// <reference types="@scenery/cavalry-types" />` (the `exports` 
 package is what makes the bare name resolve) and which `tsconfig.json` preloads through
 `types`, so the global `api` and `ui` are known everywhere.
 
-Two spots in those declarations do not match what Cavalry does at runtime. Both are bridged
+One spot in those declarations does not match what Cavalry does at runtime. It is bridged
 with a local, commented cast rather than by loosening the compiler settings:
 
-- `ui.scriptLocation` is declared as `void`, but it holds the script's folder path;
-  `modules/CavarYtpMidiFile.ts` asserts it to `string` before building the `CMC` path.
 - `ui.List.onSelectionChanged` is declared as `() => void`, but Cavalry calls it with the
   selected row uuids; the entry script annotates the handler and casts it back.
+
+The runtime is a plain ECMAScript engine: no `require`, no `Buffer`, no `atob` and no
+`Uint8Array.fromBase64`. `modules/CavarYtpBase64.ts` decodes the base64 string that
+`api.encodeBinary` hands back without reaching for any of them.
 
 `src/modules/appContext.ts` types the widgets the entry script creates (`uiHandles`) as
 ready rather than as `null`, because every helper only touches them from a UI callback,
@@ -105,20 +105,24 @@ pnpm release
 This bundles and minifies `src/` into a single `build/CavalrYTP.js`, encrypts it to
 `build/CavalrYTP.jsc` through [Stallion](https://github.com/scenery-io/stallion) (which
 has to be running in Cavalry), copies the `.jsc` to the repo root, and writes
-`dist/CavalrYTP_<version>.zip` containing the script and its assets folder.
+`dist/CavalrYTP_<version>.zip` containing the script.
 
-Everything the script needs from `dev/src` is bundled; `ui.scriptLocation` still resolves
-the assets folder next to the script, so nothing changes between a watched build and the
-release.
+Everything the script needs from `dev/src` and `node_modules` is bundled, so a watched build
+and a release behave identically.
 
-## The converter
+## MIDI parsing
 
-`CMC.exe` is built from the Go source in `CavalryMiDiConverter/` and converts a `.mid`
-file into a JSON event dump that the script reads back:
+The file is parsed inside Cavalry. `api.readFromFile` only reads text, so the `.mid` arrives
+through `api.encodeBinary` as base64; `modules/CavarYtpBase64.ts` decodes it into a
+`Uint8Array` and [`midi-file`](https://github.com/carter-thaxton/midi-file) turns the bytes
+into events. esbuild inlines the parser into the bundle, so the script needs nothing but
+itself.
 
-```sh
-cd CavalryMiDiConverter
-go build -o ../dev/static/_assets/CMC.exe .
-```
+Timing follows the rules `CavalryMiDiConverter/` implemented: one tempo map shared by every
+track, 120 BPM until the first `Set Tempo`, and SMPTE divisions derived from their frame rate
+instead of the tempo. Only the three messages the UI reads survive (`noteon`, `noteoff` and
+`controlchange`, with a velocity-0 note on normalised to `noteoff`) and tracks without notes
+are dropped.
 
-It is only built for Windows today, so the script is Windows-only.
+`CavalryMiDiConverter/` is retired: it is neither built nor shipped any more, and its Go
+source is kept only as a reference for that behaviour.

@@ -54,10 +54,13 @@ test("the bundle carries the whole core instead of loading it", () => {
     assert.equal(source.includes("CavarYtpCore"), false);
 });
 
-test("the bundle still reaches for the converter next to the script", () => {
-    // The path is built from ui.scriptLocation at runtime and the binary is copied to
-    // <displayName>_assets by the bundler's static/_assets copy step.
-    assert.ok(source.includes("CavalrYTP_assets/CMC"));
-    assert.ok(source.includes("runProcess"));
-    assert.ok(source.includes("getPlatform"));
+test("the bundle parses the MIDI in-process instead of shelling out", () => {
+    // CMC.exe and the JSON hand-off are gone: the parser is bundled in, the file arrives as
+    // base64 and nothing is spawned, so no sibling binary or platform branch is left.
+    assert.equal(source.includes("runProcess"), false, "no process is spawned");
+    assert.equal(source.includes("getPlatform"), false, "no platform branch is left");
+    assert.equal(source.includes("scriptLocation"), false, "no sibling folder is resolved");
+    assert.equal(source.includes("CavalrYTP_assets"), false);
+    assert.ok(source.includes("encodeBinary"), "binary files are read through the api");
+    assert.ok(source.includes("Bad MIDI file"), "the midi-file parser is inlined");
 });

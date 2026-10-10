@@ -6,7 +6,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { writeMidi } from "midi-file";
+
 import { state } from "../src/modules/appContext.ts";
+import { decodeBase64 } from "../src/modules/CavarYtpBase64.ts";
 import { KEYFRAME_LINEAR, KEYFRAME_STEP } from "../src/modules/CavarYtpConstants.ts";
 import { getOutputKeyframes } from "../src/modules/CavarYtpKeyframes.ts";
 import { getEventNumber, toNumber } from "../src/modules/CavarYtpNumbers.ts";
@@ -22,6 +25,7 @@ import {
     getLastGeneratedFrame,
     microsecondsToFrame,
 } from "../src/modules/CavarYtpTimeline.ts";
+import { parseMidiBytes } from "../src/modules/CavarYtpMidiFile.ts";
 import { getTrackRows } from "../src/modules/CavarYtpTracks.ts";
 
 // One MIDI file worth of events, 30fps, one second per 30 frames.
@@ -257,5 +261,163 @@ test("getTrackRows labels tracks from the file, the fallback name or the index",
         { uuid: "track-4", label: "Track 5", tooltip: "MIDI track 5" },
         { uuid: "track-1", label: "Track 2", tooltip: "MIDI track 2" },
     ]);
+});
+
+// --- MIDI parsing ---------------------------------------------------------------------------
+
+// 480 ticks per beat and 250000µs per beat, so a quarter note is 250ms and 1920 ticks a second.
+// Track 2 carries no notes on purpose: it has to be dropped, controller and name included.
+const SMF_TRACKS = [
+    [
+        { deltaTime: 0, meta: true, type: "trackName", text: "Piano" },
+        { deltaTime: 0, meta: true, type: "setTempo", microsecondsPerBeat: 250000 },
+        { deltaTime: 0, channel: 0, type: "noteOn", noteNumber: 60, velocity: 100 },
+        { deltaTime: 480, channel: 0, type: "controller", controllerType: 10, value: 20 },
+        { deltaTime: 480, channel: 0, type: "noteOff", noteNumber: 60, velocity: 0 },
+        { deltaTime: 480, channel: 0, type: "noteOn", noteNumber: 64, velocity: 80 },
+        { deltaTime: 0, channel: 0, type: "noteOn", noteNumber: 64, velocity: 0 },
+    ],
+    [
+        { deltaTime: 960, channel: 1, type: "noteOn", noteNumber: 36, velocity: 110 },
+        { deltaTime: 480, channel: 1, type: "noteOff", noteNumber: 36, velocity: 64 },
+    ],
+    [
+        { deltaTime: 0, meta: true, type: "trackName", text: "Conductor" },
+        { deltaTime: 240, channel: 2, type: "controller", controllerType: 7, value: 90 },
+    ],
+];
+
+function encodeMidiFile(tracks) {
+    return new Uint8Array(writeMidi({ header: { format: 1, ticksPerBeat: 480 }, tracks }));
+}
+
+function encodeMidiFileAsBase64(tracks) {
+    return Buffer.from(encodeMidiFile(tracks)).toString("base64");
+}
+
+test("decodeBase64 decodes base64 the way the Cavalry runtime needs it", () => {
+    const bytes = encodeMidiFile(SMF_TRACKS);
+    const encoded = encodeMidiFileAsBase64(SMF_TRACKS);
+
+    assert.deepEqual(Array.from(decodeBase64(encoded)), Array.from(bytes));
+    // api.encodeBinary may wrap the payload or break it up; both still decode.
+    assert.deepEqual(
+        Array.from(decodeBase64(`data:audio/midi;base64,${encoded}`)),
+        Array.from(bytes)
+    );
+    assert.deepEqual(
+        Array.from(decodeBase64(encoded.replace(/(.{64})/g, "$1\n"))),
+        Array.from(bytes)
+    );
+    assert.deepEqual(Array.from(decodeBase64("")), []);
+    assert.deepEqual(Array.from(decodeBase64("SGVsbG8=")), [72, 101, 108, 108, 111]);
+});
+
+test("parseMidiBytes keeps the playing tracks, names them and converts the ticks", () => {
+    const data = parseMidiBytes(decodeBase64(encodeMidiFileAsBase64(SMF_TRACKS)));
+
+    assert.deepEqual(data, {
+        trackNames: ["Piano", "Track 2"],
+        tracks: [
+            {
+                index: 0,
+                name: "Piano",
+                events: [
+                    {
+                        absMicroseconds: 0,
+                        type: "noteon",
+                        data: { channel: 0, key: 60, velocity: 100 },
+                    },
+                    {
+                        absMicroseconds: 250000,
+                        type: "controlchange",
+                        data: { channel: 0, controller: 10, value: 20 },
+                    },
+                    {
+                        absMicroseconds: 500000,
+                        type: "noteoff",
+                        data: { channel: 0, key: 60, velocity: 0 },
+                    },
+                    {
+                        absMicroseconds: 750000,
+                        type: "noteon",
+                        data: { channel: 0, key: 64, velocity: 80 },
+                    },
+                    // A note on with velocity 0 is a note off, so it keeps the same timestamp.
+                    {
+                        absMicroseconds: 750000,
+                        type: "noteoff",
+                        data: { channel: 0, key: 64, velocity: 0 },
+                    },
+                ],
+            },
+            {
+                // The tempo lives in track 0 but applies here too: 960 ticks is 500ms, not a beat.
+                index: 1,
+                name: "Track 2",
+                events: [
+                    {
+                        absMicroseconds: 500000,
+                        type: "noteon",
+                        data: { channel: 1, key: 36, velocity: 110 },
+                    },
+                    {
+                        absMicroseconds: 750000,
+                        type: "noteoff",
+                        data: { channel: 1, key: 36, velocity: 64 },
+                    },
+                ],
+            },
+        ],
+    });
+});
+
+test("parseMidiBytes falls back to 120 BPM without a tempo change", () => {
+    const tracks = [[{ deltaTime: 480, channel: 0, type: "noteOn", noteNumber: 60, velocity: 1 }]];
+    const data = parseMidiBytes(decodeBase64(encodeMidiFileAsBase64(tracks)));
+
+    // 480 ticks at the default 500000µs per beat is half a second.
+    assert.equal(data.tracks[0].events[0].absMicroseconds, 500000);
+});
+
+test("parseMidiBytes rejects bytes that are not a MIDI file", () => {
+    assert.throws(() => parseMidiBytes(new Uint8Array([0, 1, 2, 3, 0, 0, 0, 0])));
+});
+
+test("a parsed file drives the same timeline the JSON dump used to", () => {
+    const data = parseMidiBytes(decodeBase64(encodeMidiFileAsBase64(SMF_TRACKS)));
+    const timeline = collectMidiTimeline(data.tracks, TIMING);
+
+    // 30fps: 250ms rounds to frame 8, 500ms to frame 15 and 750ms to frame 23.
+    assert.deepEqual(timeline.notes, [
+        {
+            frame: 0,
+            trackIndex: 0,
+            channel: 0,
+            key: 60,
+            velocity: 100,
+            noteOffFrame: 15,
+            durationFrames: 15,
+        },
+        {
+            frame: 15,
+            trackIndex: 1,
+            channel: 1,
+            key: 36,
+            velocity: 110,
+            noteOffFrame: 23,
+            durationFrames: 8,
+        },
+        {
+            frame: 23,
+            trackIndex: 0,
+            channel: 0,
+            key: 64,
+            velocity: 80,
+            noteOffFrame: 23,
+            durationFrames: 1,
+        },
+    ]);
+    assert.deepEqual(timeline.controls, { pan: [{ frame: 8, value: 20 }], volume: [], glide: [] });
 });
 
