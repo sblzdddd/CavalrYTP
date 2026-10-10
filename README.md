@@ -1,3 +1,4 @@
+![CavalrYTP](banner.jpg)
 # CavalrYTP
 
 Generates Cavalry Value layers from the notes and controllers of a MIDI file.
