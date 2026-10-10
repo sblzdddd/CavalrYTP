@@ -1,0 +1,9 @@
+# pnpm settings. Since pnpm 11 these are read only from this file, never from a
+# "pnpm" field in package.json. Only the root package exists here, so there is
+# no packages list.
+#
+# esbuild runs a postinstall that links and validates its platform binary.
+# strictDepBuilds defaults to true, so every dependency with build scripts has
+# to be reviewed here or the install fails with ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true

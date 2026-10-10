@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+# pnpm is the package manager; keep npm from reintroducing a second lockfile
+package-lock.json
+
+# Build outputs
+build/
+dist/
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+.prettierrc.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
