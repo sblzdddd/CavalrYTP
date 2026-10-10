@@ -11,24 +11,23 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { esbuildOptions } from "../build.mjs";
 
-const SRC = fileURLToPath(new URL("../src/", import.meta.url));
+const BUILD_SCRIPT = fileURLToPath(new URL("../build.mjs", import.meta.url));
+const PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
 
-// The same options @scenery/bundler passes to esbuild for a release build.
+// build.mjs is free to explain what used to be there, so its comments are stripped before
+// asserting on what is left of it.
+function stripComments(source) {
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
+// The build script exports the options it ships with, so this cannot drift from the release.
 async function bundle() {
     const outdir = await mkdtemp(join(tmpdir(), "cavarytp-bundle-"));
     const outfile = join(outdir, "CavalrYTP.js");
 
-    await build({
-        entryPoints: [join(SRC, "CavalrYTP.ts")],
-        outfile,
-        bundle: true,
-        target: ["es2020"],
-        platform: "neutral",
-        mainFields: ["main", "module", "browser"],
-        minifyWhitespace: true,
-        minifyIdentifiers: true,
-    });
+    await build({ ...esbuildOptions(), outfile });
 
     const source = await readFile(outfile, "utf8");
     await rm(outdir, { recursive: true, force: true });
@@ -63,4 +62,36 @@ test("the bundle parses the MIDI in-process instead of shelling out", () => {
     assert.equal(source.includes("CavalrYTP_assets"), false);
     assert.ok(source.includes("encodeBinary"), "binary files are read through the api");
     assert.ok(source.includes("Bad MIDI file"), "the midi-file parser is inlined");
+});
+
+test("the build ships the plain bundle instead of sealed output", async () => {
+    // The Stallion step is gone for good: it needed Cavalry open with the Stallion script
+    // running, and it aborted the whole build when it was not.
+    const code = stripComments(await readFile(BUILD_SCRIPT, "utf8"));
+
+    assert.equal(code.includes("@scenery/bundler"), false, "the bundler is not imported");
+    assert.equal(code.includes("encrypt"), false, "nothing seals the bundle");
+    assert.equal(code.includes("8080"), false, "nothing talks to the Stallion port");
+    assert.equal(code.includes("fetch("), false, "no request leaves the build");
+
+    const pkg = JSON.parse(await readFile(PACKAGE_JSON, "utf8"));
+    const scripts = Object.values(pkg.scripts).join(" ");
+    assert.equal(scripts.includes("bundler"), false, "the bundler's release path is unwired");
+    assert.ok(scripts.includes("build.mjs"), "the build runs build.mjs");
+    assert.equal(pkg.devDependencies["@scenery/bundler"], undefined);
+});
+
+test("the build leaves the script in dist/ instead of packing it", async () => {
+    // Nothing is zipped: the bundle is the deliverable, so it goes straight to dist/ and the
+    // archiver is no longer a dependency.
+    const code = stripComments(await readFile(BUILD_SCRIPT, "utf8"));
+
+    assert.ok(code.includes('"dist"'), "the script is written to dist/");
+    assert.equal(code.includes("AdmZip"), false, "no archiver is imported");
+    assert.equal(code.includes("writeZip"), false, "no archive is written");
+    assert.equal(code.includes(".zip"), false, "no archive is named");
+
+    const pkg = JSON.parse(await readFile(PACKAGE_JSON, "utf8"));
+    assert.equal(pkg.devDependencies["adm-zip"], undefined);
+    assert.equal(pkg.dependencies["adm-zip"], undefined);
 });
